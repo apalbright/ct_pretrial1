@@ -1,0 +1,227 @@
+---
+title: "The Dynamics of Pretrial Inmate Populations"
+author: Alex Albright
+date: "1-14-2019"
+output: html_notebook
+---
+
+# Daily Counts vs. Yearly Flows
+
+BJS reports don't tell us how many unique people flow through jail in a given year. However, as of 7/1/16, Connecticut [has published a daily census](https://data.ct.gov/Public-Safety/Accused-Pre-Trial-Inmates-in-Correctional-Faciltie/b674-jy6w) of every inmate held in jail while awaiting trial.^[H/t to *Data is Plural* for blasting this out way back when.] 
+
+I download the data on 1-8-19 and save it as `CT-jail_1-8-19.csv`. It has 2.88 million rows.
+
+Call the `csv` and clean up.  
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(data.table); library(janitor)
+CT<-fread('CT-jail_1-8-19.csv')
+CT<-clean_names(CT)
+CT$download_date<-as.Date(CT$download_date, '%m/%d/%Y')
+CT$latest_admission_date<-as.Date(CT$latest_admission_date, '%m/%d/%Y')
+CT$identifier<-as.character(CT$identifier)
+
+#fix race names
+CT$race[CT$race == 'AMER IND'] <- 'Native American'
+CT$race[CT$race == 'ASIAN'] <- 'Asian'
+CT$race[CT$race == 'BLACK'] <- 'Black'
+CT$race[CT$race == 'WHITE'] <- 'White'
+CT$race[CT$race == 'HISPANIC'] <- 'Hispanic'
+```
+
+While it's 2.88 million rows, how many unique people are in the data?
+
+```{r}
+#search unique by identifier
+nrow(unique(CT[,"identifier"]))
+```
+There are 30,785 unique people. But maybe some people have gone in and out of jail for different offenses? So, how many unique person-admissions are there?
+
+```{r}
+#search unique rows by identifier and latest admission date
+nrow(unique(CT[,c("identifier","latest_admission_date")]))
+```
+
+42,396 unique person-admissions. 
+
+Let's compare the 1/1/2018 count and the count for all of 2018.
+```{r}
+nrow(unique(CT[download_date=="2018-01-01","identifier"]))
+```
+There were 3,283 unique people in the CT jail on 1-1-2018.
+```{r}
+nrow(unique(CT[CT$download_date >= "2018-01-01" & CT$download_date < "2019-01-01", "identifier"]))
+```
+But there were 15,972 unique people in the CT jail during all of 2018.
+```{r, message=FALSE, warning=FALSE}
+15972/3283
+```
+So, in CT for the pretrial jail population, **about 5 times as many pretrial individuals flow through the jail system over the year as are represented in a daily count.** 
+
+Recall Prof Pfaff had said in the [Justice in America podcast](https://theappeal.org/justice-in-america-episode-3-who-built-mass-incarceration-prosecutors/), "it’s probably on the order of six, seven million unique individuals get sent to jail for at least some period of time every single year." 
+
+```{r}
+6000000/750000
+7000000/750000
+```
+
+Given that he was estimating about 750,000 people are in jail on a given day, he estimates that about 8-9 times (see above) as many people flow through jail over the year as are represented in a daily count.  
+
+Regardless of the specifics, the main point remains: daily counts massively underrepresent the population who experiences jail on an annual basis (due to short durations of stays in jail). In the case of CT pretrial (using numbers from 2018), about 5 times as many pretrial people flow through the jail system over the year as are represented in a daily count. 
+
+---
+
+# Spotting (Holiday) Seasonality
+
+Before making graphs, I call my custom theme, as per usual.
+
+```{r, message=FALSE, warning=FALSE}
+#Load more libraries
+library(ggplot2);library(ggrepel); library(extrafont); library(ggthemes);library(reshape);library(grid);
+library(scales);library(RColorBrewer);library(gridExtra)
+
+#Define theme for my visuals
+my_theme <- function() {
+
+  # Define colors for the chart
+  palette <- brewer.pal("Greys", n=9)
+  color.background = palette[2]
+  color.grid.major = palette[4]
+  color.panel = palette[3]
+  color.axis.text = palette[9]
+  color.axis.title = palette[9]
+  color.title = palette[9]
+
+  # Create basic construction of chart
+  theme_bw(base_size=9, base_family="Palatino") + 
+
+  # Set the entire chart region to a light gray color
+  theme(panel.background=element_rect(fill=color.panel, color=color.background)) +
+  theme(plot.background=element_rect(fill=color.background, color=color.background)) +
+  theme(panel.border=element_rect(color=color.background)) +
+
+  # Format grid
+  theme(panel.grid.major=element_line(color=color.grid.major,size=.25)) +
+  theme(panel.grid.minor=element_blank()) +
+  theme(axis.ticks=element_blank()) +
+
+  # Format legend
+  theme(legend.position="right") +
+  theme(legend.background = element_rect(fill=color.background)) +
+  theme(legend.text = element_text(size=7,color=color.axis.title)) + 
+  theme(legend.title = element_text(size=0,face="bold", color=color.axis.title)) + 
+  
+  #Format facet labels
+  theme(strip.text.x = element_text(size = 8, face="bold"))+
+
+  # Format title and axes labels these and tick marks
+  theme(plot.title=element_text(color=color.title, size=18, face="bold", hjust=0)) +
+  theme(axis.text.x=element_text(size=8,color=color.axis.text)) +
+  theme(axis.text.y=element_text(size=8,color=color.axis.text)) +
+  theme(axis.title.x=element_text(size=10,color=color.axis.title, vjust=-1)) +
+  theme(axis.title.y=element_text(size=10,color=color.axis.title, vjust=1.8)) +
+
+  #Format title and facet_wrap title
+  theme(strip.text = element_text(size=8), plot.title = element_text(size = 14, face = "bold", colour = "black", vjust = 1, hjust=0.5))+
+    
+  # Plot margins
+  theme(plot.margin = unit(c(.2, .2, .2, .2), "cm"))
+}
+```
+
+Show line chart of inmates over time by race.
+
+```{r, message=FALSE, warning=FALSE}
+library(dplyr)
+CTdays<- CT %>% 
+  group_by(download_date) %>% 
+  summarise(n = n())
+
+ggplot(data=CTdays, aes(x=download_date, y=n)) + 
+  geom_line()+
+  scale_y_continuous(limits=c(0,7000))+
+  my_theme()+ theme(plot.title = element_text(hjust = 0))+
+  labs(x="", y="Number of Pretrial Inmates")+
+  ggtitle("Gender/Race of Connecticut Pretrial Inmates (7/1/16-1/8/19)", subtitle = "Data Available via Connecticut Open Data | Visualization via Alex Albright (thelittledataset.com)")
+```
+2017-8-24 is a crazy outlier, remove it. 
+```{r, message=FALSE, warning=FALSE}
+CTdays<- subset(CTdays, n<6000)
+```
+
+Graph by day now with 2017-8-24 removed (as I assume it must be an error).
+
+```{r, message=FALSE, warning=FALSE}
+ggplot(data=CTdays, aes(x=download_date, y=n)) + 
+  geom_line()+
+  my_theme()+ theme(plot.title = element_text(hjust = 0))+
+  labs(x="Date", y="Number of Pretrial Inmates", caption="\nData plotted by day. Red lines mark the beginning/end of years.")+
+  geom_vline(xintercept = as.numeric(as.Date(
+    c("2017-01-01","2018-01-01", "2019-01-01")
+    )), linetype=4, color="red")+
+  scale_x_date(date_breaks = "1 month", date_labels = "%m-%y")+
+  scale_y_continuous(limits=c(0,3700))+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+  ggtitle("Connecticut Pretrial Inmate Population 7/1/16-1/8/19", subtitle = "Data Available via Connecticut Open Data | Visualization via Alex Albright (thelittledataset.com)")
+  
+ggsave("time-pop0.png", width=7, height=4.5, dpi=900)
+```
+Zoom in to see variation.
+
+```{r, message=FALSE, warning=FALSE}
+ggplot(data=CTdays, aes(x=download_date, y=n)) + 
+  geom_line()+
+  my_theme()+ theme(plot.title = element_text(hjust = 0))+
+  labs(x="Date", y="Number of Pretrial Inmates", caption="\nData plotted by day. Red lines mark the beginning/end of years.")+
+  geom_vline(xintercept = as.numeric(as.Date(
+    c("2017-01-01","2018-01-01", "2019-01-01")
+    )), linetype=4, color="red")+
+  scale_x_date(date_breaks = "1 month", date_labels = "%m-%y")+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+  ggtitle("Connecticut Pretrial Inmate Population 7/1/16-1/8/19", subtitle = "Data Available via Connecticut Open Data | Visualization via Alex Albright (thelittledataset.com)")
+  
+ggsave("time-pop.png", width=7, height=4.5, dpi=900)
+```
+
+Color december portions.
+
+```{r, message=FALSE, warning=FALSE}
+CTdays$month<-month(CTdays$download_date)
+CTdays$dec<-0
+CTdays$dec[CTdays$month==12]<-1
+CTdays$dec<-as.numeric(CTdays$dec)
+
+ggplot(data=CTdays, aes(x=download_date, y=n, color=dec)) + 
+  geom_line()+ #scale_color_manual(values = c("black", "red"))+
+  my_theme()+ theme(plot.title = element_text(hjust = 0))+
+  labs(x="Date", y="Number of Pretrial Inmates", caption="\nData plotted by day. Light blue denotes days during December.")+
+  scale_x_date(date_breaks = "1 month", date_labels = "%m-%y")+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1), legend.position="none")+
+  ggtitle("Connecticut Pretrial Inmate Population 7/1/16-1/8/19", subtitle = "Data Available via Connecticut Open Data | Visualization via Alex Albright (thelittledataset.com)")
+  
+ggsave("time-pop-dec.png", width=7, height=4.5, dpi=900)
+```
+
+Zoom in on December for the three years... Subset down to december days and facet by year.
+
+```{r, message=FALSE, warning=FALSE}
+CTdaysdec<-subset(CTdays, CTdays$dec==1)
+CTdaysdec$day<-as.numeric(format(CTdaysdec$download_date, "%d"))
+CTdaysdec$year<-year(CTdaysdec$download_date)
+
+ggplot(data=CTdaysdec, aes(x=day, y=n)) + 
+  geom_line()+
+  geom_point(data=subset(CTdaysdec, day==24), color="#009E73")+
+  geom_point(data=subset(CTdaysdec, day==25), color="#D55E00")+
+  my_theme()+ theme(plot.title = element_text(hjust = 0))+
+  labs(x="Date in December", y="Number of Pretrial Inmates", caption="\nData plotted by day for December 2016, 2017, and 2018.\nGreen dots mark Xmas eve and red dots mark Xmas.")+
+  scale_x_continuous(breaks=seq(1,31,3), labels=seq(1,31,3))+
+  facet_wrap(~year)+
+  ggtitle("Spotting Seasonality", subtitle = "Data Available via Connecticut Open Data | Visualization via Alex Albright (thelittledataset.com)")
+  
+ggsave("time-pop-xmas.png", width=7, height=4.5, dpi=900)
+```
+
+I add red/green ornaments on Christmas eve and Christmas. There are drops around holidays (xmas).
+
+- There is a Dallas article that mentions Commissioner Mike Cantrell who says, ["We go down every Christmas ... People are getting their loved ones out of jail, or people are not wanting to get in jail, so they stay out.""](https://www.dallasnews.com/news/dallas-county/2017/12/23/dallas-county-jail-population-dips-historic-lowand-officials-disagree)
+- The BJS mentions this too but doesn't attribute it to the holidays: ["Comparisons of year-end data with previous midyear data need to consider seasonal variations, as jails typically hold fewer inmates at year-end than at midyear."](https://www.bjs.gov/content/pub/pdf/ji16.pdf)
